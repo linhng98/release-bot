@@ -1,0 +1,617 @@
+# CI/CD Pipeline Specs
+#
+# Environment Variables must exist in Circle CI
+# PRJ_AWS_ACCOUNT: 897772751639
+# PRJ_AWS_ACCESS_KEY_ID:
+# PRJ_AWS_SECRET_ACCESS_KEY:
+# PRJ_AWS_REGION: us-west-2
+
+# OUTCOME:
+# # ECR:  ${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com/${CIRCLE_PROJECT_REPONAME}/<Application-name>
+# #
+
+version: 2.1
+
+orbs:
+  python: circleci/python@0.2.1
+  aws-cli: circleci/aws-cli@2.0
+  aws-ecr: circleci/aws-ecr@6.14.0
+
+parameters:
+  ec2_user:
+    type: string
+    default: ubuntu
+  ec2_instanceId_dev:
+    type: string
+    default: i-028d831c86760cf76
+  ec2_server_dev:
+    type: string
+    default: dev.nipofpd1.cinnamon.is
+  shared_s3_bucket:
+    type: string
+    default: prj-nippo
+  ai_report_tag:
+    type: string
+    default: v0.1.33
+  ai_docker_image:
+    type: string
+    default: cinamonn/prj_flax:prj_flax-v0.1.33
+  
+
+commands:
+  setup_remote_docker_cmd:
+    steps:
+      - setup_remote_docker:
+          version: 19.03.13
+          docker_layer_caching: true
+  setup_ssh_fingerprint:
+    steps:
+      - add_ssh_keys:
+          fingerprints:
+            - "a9:55:8e:44:92:ae:1c:cc:29:7b:08:06:9e:62:6b:ef"
+  setup_docker_hub:
+    steps:
+      - run:
+          name: Docker hub login
+          command:  |
+            docker login -u ${DOCKERHUB_READONLY_US} -p ${DOCKERHUB_READONLY_PWD}
+  build_push_ecr_webapi:
+    steps:
+      - aws-ecr/build-and-push-image:
+          account-url: PRJ_AWS_ECR_ACCOUNT_URL
+          aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
+          aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
+          region: PRJ_AWS_REGION
+          repo: "${CIRCLE_PROJECT_REPONAME}/webapi"
+          tag: "${IMAGE_TAG}"
+          create-repo: true
+          extra-build-args: "--ssh default"
+          dockerfile: applications/webapi/Dockerfile
+  build_push_ecr_worker:
+    steps:
+      - aws-ecr/build-and-push-image:
+          account-url: PRJ_AWS_ECR_ACCOUNT_URL
+          aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
+          aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
+          region: PRJ_AWS_REGION
+          repo: "${CIRCLE_PROJECT_REPONAME}/flax_worker"
+          tag: "${IMAGE_TAG}"
+          create-repo: true
+          extra-build-args: --ssh default --build-arg AI_IMAGE=<<pipeline.parameters.ai_docker_image>>
+          dockerfile: applications/flax_worker/Dockerfile
+  build_push_ecr_datacleaner:
+    steps:
+      - aws-ecr/build-and-push-image:
+          account-url: PRJ_AWS_ECR_ACCOUNT_URL
+          aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
+          aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
+          region: PRJ_AWS_REGION
+          repo: "${CIRCLE_PROJECT_REPONAME}/data_cleaner"
+          tag: "${IMAGE_TAG}"
+          create-repo: true
+          extra-build-args: "--ssh default"
+          dockerfile: applications/data-cleaner/Dockerfile
+
+  deploy_on_ec2_dev:
+    steps:
+      - checkout
+      - run:
+          name: Deploy on EC2
+          command: |
+            ec2_user="ubuntu"
+            ecr_url=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com
+            scp -o StrictHostKeyChecking=no -r deployment ${ec2_user}@<< pipeline.parameters.ec2_server_dev >>:~/
+            ssh ${ec2_user}@<< pipeline.parameters.ec2_server_dev >> -o StrictHostKeyChecking=no \<< EOF
+              cd deployment
+              docker login -u ${DOCKERHUB_READONLY_US} -p ${DOCKERHUB_READONLY_PWD}
+              export TAG=${IMAGE_TAG}
+              export DOCKER_IMAGE_BACKEND=${ecr_url}/${CIRCLE_PROJECT_REPONAME}/webapi
+              export DOCKER_IMAGE_CELERYWORKER=${ecr_url}/${CIRCLE_PROJECT_REPONAME}/flax_worker
+              export DOCKER_IMAGE_DATA_CLEANER=${ecr_url}/${CIRCLE_PROJECT_REPONAME}/data_cleaner
+              aws ecr get-login-password --region ${PRJ_AWS_REGION} | docker login --username AWS --password-stdin ${ecr_url}
+              export COMPOSE_HTTP_TIMEOUT=300
+              make ps
+              make up
+              sleep 3
+              make ps
+              make restart-nginx
+              
+              sudo netstat -ntpl | grep [0-9]:${1:-80} -q ;
+              if [ $? -eq 0 ]
+              then 
+                sudo certbot certonly --webroot --webroot-path /var/www/certbot/ --non-interactive --agree-tos -m dso@cinnamon.is -d << pipeline.parameters.ec2_server_dev >>
+              else 
+                sudo certbot certonly --standalone --non-interactive --agree-tos -m dso@cinnamon.is -d << pipeline.parameters.ec2_server_dev >>
+              fi
+            EOF
+  deploy_monitor_on_ec2_dev:
+    steps:
+      - checkout
+      - run:
+          name: Deploy to dev environment
+          command: |
+            ec2_user="ubuntu"
+            domain_dev=<< pipeline.parameters.ec2_server_dev>>
+            ecr_url=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com
+            scp -o StrictHostKeyChecking=no -r observability ${ec2_user}@${domain_dev}:~/
+            ssh ${ec2_user}@${domain_dev} -o StrictHostKeyChecking=no \<< EOF
+              cd observability
+              export DOMAIN=${domain_dev}
+              envsubst < env.dev > .env
+              make ps-monitor-dev
+              make up-monitor-dev
+              sleep 3
+              make ps-monitor-dev
+            EOF
+
+jobs:
+  test:
+    docker:
+      - image: cinamonn/tools:ninja-python-1.0.2
+    steps:
+      - checkout
+      - run:
+          command: |
+            DOMAIN=backend bash ./scripts/test-unit-all.sh
+          name: Unit Test All
+      - run:
+          name: Codacy Report
+          command: |
+            export CODACY_PROJECT_NAME=${CIRCLE_PROJECT_REPONAME}
+            bash <(curl -Ls https://coverage.codacy.com/get.sh) report -r coverage.xml
+
+
+# # # PLEASE TAKE YOUR EYES ON THIS AREAS. THIS IS A MAIN CICD PIPELINE # # #
+# # # TAKE ATTENTION WHAT YOU EDIT THESE AREA
+# On PR branch
+  pr-dockerize-webapi:
+    docker:
+      - image: cimg/python:3.8.4
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=pr-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_webapi
+
+  pr-dockerize-worker:
+    docker:
+      - image: cimg/python:3.8.4
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=pr-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_worker
+
+  pr-dockerize-datacleaner:
+    docker:
+      - image: cimg/python:3.8.4
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=pr-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_datacleaner
+
+  deploy-on-pr:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - setup_ssh_fingerprint
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=pr-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - deploy_on_ec2_dev
+
+  deploy-monitor-on-pr:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - deploy_monitor_on_ec2_dev
+
+# On the master/main branch
+# # Change logs
+
+  master-dockerize-webapi:
+    docker:
+      - image: cimg/python:3.8.4
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=m-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_webapi
+
+  master-dockerize-worker:
+    docker:
+      - image: cimg/python:3.8.4
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=m-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_worker
+
+  master-dockerize-datacleaner:
+    docker:
+      - image: cimg/python:3.8.4
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=m-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_datacleaner
+
+  changelog:
+    docker:
+      - image: gcr.io/google.com/cloudsdktool/cloud-sdk:350.0.0-alpine
+    steps:
+      - run:
+          name: Preview changelog
+          command: |
+            apk add jq
+            echo $FILE_CREDENTIAL > google-application-credentials.json
+            gcloud auth activate-service-account --key-file=google-application-credentials.json --project=cin-sre
+            export body=$(printf '{"type":"github", "project_path":"%s/%s", "range":"%s"}' ${CIRCLE_PROJECT_USERNAME} ${CIRCLE_PROJECT_REPONAME} ${CIRCLE_SHA1})
+            echo $body
+            curl -H "Authorization: bearer $(gcloud auth print-identity-token)" https://operator.sre.cinnamon.is/twirp/sre.Operator/PreviewChangelog -XPOST -H 'Content-Type: application/json' -d "${body}" | jq -r .content
+
+# # Build, Ship
+  master-dockerize:
+    docker:
+      - image: circleci/python:3.7
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=m-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_webapi
+      - build_push_ecr_worker
+      - build_push_ecr_datacleaner
+
+# # Deploy
+  deploy-on-master:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - setup_ssh_fingerprint
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=m-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - deploy_on_ec2_dev
+
+  deploy-monitor-on-master:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - deploy_monitor_on_ec2_dev
+
+# # Release
+# # # Auto bumping version, and branching
+  release:
+    docker:
+      - image: gcr.io/google.com/cloudsdktool/cloud-sdk:350.0.0-alpine
+        entrypoint: ["sh"]
+    steps:
+      - run:
+          name: Release new version
+          command: |
+            apk add jq
+            echo $FILE_CREDENTIAL > google-application-credentials.json
+            gcloud auth activate-service-account --key-file=google-application-credentials.json --project=cin-sre
+            export body=$(printf '{"type":"github", "project_path":"%s/%s", "range":"%s"}' ${CIRCLE_PROJECT_USERNAME} ${CIRCLE_PROJECT_REPONAME} ${CIRCLE_SHA1})
+            echo $body
+            curl -H "Authorization: bearer $(gcloud auth print-identity-token)" https://operator.sre.cinnamon.is/twirp/sre.Operator/CreateRelease -XPOST -H 'Content-Type: application/json' -d "${body}"
+
+
+# Release branches
+# # Build, Ship
+  release-dockerize:
+    docker:
+      - image: circleci/python:3.7
+    environment:
+      DOCKER_BUILDKIT: 1
+    steps:
+      - setup_remote_docker_cmd
+      - setup_docker_hub
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=${CIRCLE_BRANCH:9}-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+      - build_push_ecr_webapi
+      - build_push_ecr_worker
+      - build_push_ecr_datacleaner
+
+# # Deploy
+  deploy-on-staging:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - setup_ssh_fingerprint
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=${CIRCLE_BRANCH:9}-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+            echo "#TODO update me"
+
+  deploy-on-production:
+    docker:
+      - image: circleci/python:3.7
+    steps:
+      - setup_ssh_fingerprint
+      - run:
+          name: Prepare env
+          command: |
+            echo "export IMAGE_TAG=${CIRCLE_BRANCH:9}-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
+            echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
+            echo "#TODO update me"
+
+  turnon-ec2:
+    docker:
+      - image: cimg/python:3.8.4
+    steps:
+      - aws-cli/setup:
+          profile-name: default
+          aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
+          aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
+          aws-region: PRJ_AWS_REGION
+      - run:
+          name: start ec2 instance in working time
+          command: |
+            unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+            ec2_instanceId_dev=<< pipeline.parameters.ec2_instanceId_dev >>
+            aws ec2 start-instances --instance-ids $ec2_instanceId_dev
+
+  turnoff-ec2:
+    docker:
+      - image: cimg/python:3.8.4
+    steps:
+      - aws-cli/setup:
+          profile-name: default
+          aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
+          aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
+          aws-region: PRJ_AWS_REGION
+      - run:
+          name: stop ec2 instance in outside working hours
+          command: |
+            unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+            ec2_instanceId_dev=<< pipeline.parameters.ec2_instanceId_dev >>
+            aws ec2 stop-instances --instance-ids $ec2_instanceId_dev
+  
+workflows:
+  develop:
+    jobs:
+      - test:
+          context: sre-pipeline
+          filters:
+            tags:
+              only: /.*/
+      - pr-approve-dockerize:
+          type: approval
+          requires:
+          - test
+          filters:
+            branches:
+              ignore:
+              - master
+              - main
+              - /^releases/(\d+.\d+.\d+)(-.*)?/
+      - pr-dockerize-webapi:
+          context: sre-pipeline
+          requires:
+          - pr-approve-dockerize
+          filters:
+            branches:
+              ignore:
+              - master
+              - main
+              - /^releases/(\d+.\d+.\d+)(-.*)?/
+      - pr-dockerize-worker:
+          context: sre-pipeline
+          requires:
+          - pr-approve-dockerize
+          filters:
+            branches:
+              ignore:
+              - master
+              - main
+              - /^releases/(\d+.\d+.\d+)(-.*)?/
+      - pr-dockerize-datacleaner:
+          context: sre-pipeline
+          requires:
+          - pr-approve-dockerize
+          filters:
+            branches:
+              ignore:
+              - master
+              - main
+              - /^releases/(\d+.\d+.\d+)(-.*)?/
+      - deploy-on-pr:
+          context: sre-pipeline
+          requires:
+          - pr-dockerize-webapi
+          - pr-dockerize-worker
+          - pr-dockerize-datacleaner
+          filters:
+            branches:
+              ignore:
+              - master
+              - main
+              - /^releases/(\d+.\d+.\d+)(-.*)?/
+      - pr-approve-deploy-monitor:
+          type: approval
+          filters:
+            branches:
+              ignore:
+              - master
+              - main
+              - /^releases/(\d+.\d+.\d+)(-.*)?/
+      - deploy-monitor-on-pr:
+          context:
+          - dockerhub-reader
+          requires:
+          - pr-approve-deploy-monitor
+          filters:
+            branches:
+              ignore:
+              - master
+              - main
+              - /^releases/(\d+.\d+.\d+)(-.*)?/
+  master:
+    jobs:
+      - approve-dockerize:
+          type: approval
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - master-dockerize-webapi:
+          context: sre-pipeline
+          requires:
+          - approve-dockerize
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - master-dockerize-worker:
+          context: sre-pipeline
+          requires:
+          - approve-dockerize
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - master-dockerize-datacleaner:
+          context: sre-pipeline
+          requires:
+          - approve-dockerize
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - deploy-on-master:
+          context: sre-pipeline
+          requires:
+          - master-dockerize-webapi
+          - master-dockerize-worker
+          - master-dockerize-datacleaner
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - approve-deploy-monitor-on-master:
+          type: approval
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - deploy-monitor-on-master:
+          context:
+          - dockerhub-reader
+          requires:
+          - approve-deploy-monitor-on-master
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - changelog:
+          context: sre-pipeline
+          requires:
+          - deploy-on-master
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - wait-approve-release:
+          type: approval
+          requires:
+          - changelog
+          filters:
+            branches:
+              only:
+              - master
+              - main
+      - release:
+          context: sre-pipeline
+          requires:
+          - wait-approve-release
+          filters:
+            branches:
+              only:
+              - master
+              - main
+
+  working-time:
+    triggers:
+      - schedule:
+          cron: "00 01 * * 1-5" # UTC timezone
+          # JPT: 10:00AM
+          # VNT: 8:00AM
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - turnon-ec2
+  non-working-time:
+    triggers:
+      - schedule:
+          cron: "00 12 * * 1-5" # UTC timezone
+          # JPT: 9:00PM
+          # VNT: 7:00PM
+          filters:
+            branches:
+              only:
+                - master
+    jobs:
+      - turnoff-ec2
