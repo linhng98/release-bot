@@ -9,9 +9,9 @@ def get_value(s: str) -> Any:
     return s
 
 
-def update_yaml_value(content: dict, path: str, data: str) -> str:
+def update_yaml_value(yamlcontent: dict, path: str, data: str) -> str:
     layers = path.split(".")
-    value = content
+    value = yamlcontent
 
     for i in range(len(layers)):
         s = get_value(layers[i])
