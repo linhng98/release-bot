@@ -1,3 +1,4 @@
+---
 # CI/CD Pipeline Specs
 #
 # Environment Variables must exist in Circle CI
@@ -11,12 +12,10 @@
 # #
 
 version: 2.1
-
 orbs:
   python: circleci/python@0.2.1
   aws-cli: circleci/aws-cli@2.0
   aws-ecr: circleci/aws-ecr@6.14.0
-
 parameters:
   ec2_user:
     type: string
@@ -35,9 +34,7 @@ parameters:
     default: v0.1.33
   ai_docker_image:
     type: string
-    default: cinamonn/prj_flax:prj_flax-v0.1.33
-  
-
+    default: somewhere
 commands:
   setup_remote_docker_cmd:
     steps:
@@ -48,12 +45,12 @@ commands:
     steps:
       - add_ssh_keys:
           fingerprints:
-            - "a9:55:8e:44:92:ae:1c:cc:29:7b:08:06:9e:62:6b:ef"
+            - a9:55:8e:44:92:ae:1c:cc:29:7b:08:06:9e:62:6b:ef
   setup_docker_hub:
     steps:
       - run:
           name: Docker hub login
-          command:  |
+          command: |
             docker login -u ${DOCKERHUB_READONLY_US} -p ${DOCKERHUB_READONLY_PWD}
   build_push_ecr_webapi:
     steps:
@@ -62,10 +59,10 @@ commands:
           aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
           aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
           region: PRJ_AWS_REGION
-          repo: "${CIRCLE_PROJECT_REPONAME}/webapi"
-          tag: "${IMAGE_TAG}"
+          repo: ${CIRCLE_PROJECT_REPONAME}/webapi
+          tag: ${IMAGE_TAG}
           create-repo: true
-          extra-build-args: "--ssh default"
+          extra-build-args: --ssh default
           dockerfile: applications/webapi/Dockerfile
   build_push_ecr_worker:
     steps:
@@ -74,8 +71,8 @@ commands:
           aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
           aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
           region: PRJ_AWS_REGION
-          repo: "${CIRCLE_PROJECT_REPONAME}/flax_worker"
-          tag: "${IMAGE_TAG}"
+          repo: ${CIRCLE_PROJECT_REPONAME}/flax_worker
+          tag: ${IMAGE_TAG}
           create-repo: true
           extra-build-args: --ssh default --build-arg AI_IMAGE=<<pipeline.parameters.ai_docker_image>>
           dockerfile: applications/flax_worker/Dockerfile
@@ -86,12 +83,11 @@ commands:
           aws-access-key-id: PRJ_AWS_ACCESS_KEY_ID
           aws-secret-access-key: PRJ_AWS_SECRET_ACCESS_KEY
           region: PRJ_AWS_REGION
-          repo: "${CIRCLE_PROJECT_REPONAME}/data_cleaner"
-          tag: "${IMAGE_TAG}"
+          repo: ${CIRCLE_PROJECT_REPONAME}/data_cleaner
+          tag: ${IMAGE_TAG}
           create-repo: true
-          extra-build-args: "--ssh default"
+          extra-build-args: --ssh default
           dockerfile: applications/data-cleaner/Dockerfile
-
   deploy_on_ec2_dev:
     steps:
       - checkout
@@ -115,12 +111,12 @@ commands:
               sleep 3
               make ps
               make restart-nginx
-              
+
               sudo netstat -ntpl | grep [0-9]:${1:-80} -q ;
               if [ $? -eq 0 ]
-              then 
+              then
                 sudo certbot certonly --webroot --webroot-path /var/www/certbot/ --non-interactive --agree-tos -m dso@cinnamon.is -d << pipeline.parameters.ec2_server_dev >>
-              else 
+              else
                 sudo certbot certonly --standalone --non-interactive --agree-tos -m dso@cinnamon.is -d << pipeline.parameters.ec2_server_dev >>
               fi
             EOF
@@ -143,7 +139,6 @@ commands:
               sleep 3
               make ps-monitor-dev
             EOF
-
 jobs:
   test:
     docker:
@@ -159,11 +154,6 @@ jobs:
           command: |
             export CODACY_PROJECT_NAME=${CIRCLE_PROJECT_REPONAME}
             bash <(curl -Ls https://coverage.codacy.com/get.sh) report -r coverage.xml
-
-
-# # # PLEASE TAKE YOUR EYES ON THIS AREAS. THIS IS A MAIN CICD PIPELINE # # #
-# # # TAKE ATTENTION WHAT YOU EDIT THESE AREA
-# On PR branch
   pr-dockerize-webapi:
     docker:
       - image: cimg/python:3.8.4
@@ -227,8 +217,8 @@ jobs:
     steps:
       - deploy_monitor_on_ec2_dev
 
-# On the master/main branch
-# # Change logs
+  # On the master/main branch
+  # # Change logs
 
   master-dockerize-webapi:
     docker:
@@ -288,8 +278,6 @@ jobs:
             export body=$(printf '{"type":"github", "project_path":"%s/%s", "range":"%s"}' ${CIRCLE_PROJECT_USERNAME} ${CIRCLE_PROJECT_REPONAME} ${CIRCLE_SHA1})
             echo $body
             curl -H "Authorization: bearer $(gcloud auth print-identity-token)" https://operator.sre.cinnamon.is/twirp/sre.Operator/PreviewChangelog -XPOST -H 'Content-Type: application/json' -d "${body}" | jq -r .content
-
-# # Build, Ship
   master-dockerize:
     docker:
       - image: circleci/python:3.7
@@ -307,7 +295,7 @@ jobs:
       - build_push_ecr_worker
       - build_push_ecr_datacleaner
 
-# # Deploy
+  # # Deploy
   deploy-on-master:
     docker:
       - image: circleci/python:3.7
@@ -326,12 +314,12 @@ jobs:
     steps:
       - deploy_monitor_on_ec2_dev
 
-# # Release
-# # # Auto bumping version, and branching
+  # # Release
+  # # # Auto bumping version, and branching
   release:
     docker:
       - image: gcr.io/google.com/cloudsdktool/cloud-sdk:350.0.0-alpine
-        entrypoint: ["sh"]
+        entrypoint: [sh]
     steps:
       - run:
           name: Release new version
@@ -342,10 +330,6 @@ jobs:
             export body=$(printf '{"type":"github", "project_path":"%s/%s", "range":"%s"}' ${CIRCLE_PROJECT_USERNAME} ${CIRCLE_PROJECT_REPONAME} ${CIRCLE_SHA1})
             echo $body
             curl -H "Authorization: bearer $(gcloud auth print-identity-token)" https://operator.sre.cinnamon.is/twirp/sre.Operator/CreateRelease -XPOST -H 'Content-Type: application/json' -d "${body}"
-
-
-# Release branches
-# # Build, Ship
   release-dockerize:
     docker:
       - image: circleci/python:3.7
@@ -363,7 +347,7 @@ jobs:
       - build_push_ecr_worker
       - build_push_ecr_datacleaner
 
-# # Deploy
+  # # Deploy
   deploy-on-staging:
     docker:
       - image: circleci/python:3.7
@@ -375,7 +359,6 @@ jobs:
             echo "export IMAGE_TAG=${CIRCLE_BRANCH:9}-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
             echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
             echo "#TODO update me"
-
   deploy-on-production:
     docker:
       - image: circleci/python:3.7
@@ -387,7 +370,6 @@ jobs:
             echo "export IMAGE_TAG=${CIRCLE_BRANCH:9}-${CIRCLE_SHA1:0:7}" >> $BASH_ENV
             echo "export PRJ_AWS_ECR_ACCOUNT_URL=${PRJ_AWS_ACCOUNT}.dkr.ecr.${PRJ_AWS_REGION}.amazonaws.com" >> $BASH_ENV
             echo "#TODO update me"
-
   turnon-ec2:
     docker:
       - image: cimg/python:3.8.4
@@ -403,7 +385,6 @@ jobs:
             unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
             ec2_instanceId_dev=<< pipeline.parameters.ec2_instanceId_dev >>
             aws ec2 start-instances --instance-ids $ec2_instanceId_dev
-
   turnoff-ec2:
     docker:
       - image: cimg/python:3.8.4
@@ -419,7 +400,6 @@ jobs:
             unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
             ec2_instanceId_dev=<< pipeline.parameters.ec2_instanceId_dev >>
             aws ec2 stop-instances --instance-ids $ec2_instanceId_dev
-  
 workflows:
   develop:
     jobs:
@@ -431,74 +411,74 @@ workflows:
       - pr-approve-dockerize:
           type: approval
           requires:
-          - test
+            - test
           filters:
             branches:
               ignore:
-              - master
-              - main
-              - /^releases/(\d+.\d+.\d+)(-.*)?/
+                - master
+                - main
+                - /^releases/(\d+.\d+.\d+)(-.*)?/
       - pr-dockerize-webapi:
           context: sre-pipeline
           requires:
-          - pr-approve-dockerize
+            - pr-approve-dockerize
           filters:
             branches:
               ignore:
-              - master
-              - main
-              - /^releases/(\d+.\d+.\d+)(-.*)?/
+                - master
+                - main
+                - /^releases/(\d+.\d+.\d+)(-.*)?/
       - pr-dockerize-worker:
           context: sre-pipeline
           requires:
-          - pr-approve-dockerize
+            - pr-approve-dockerize
           filters:
             branches:
               ignore:
-              - master
-              - main
-              - /^releases/(\d+.\d+.\d+)(-.*)?/
+                - master
+                - main
+                - /^releases/(\d+.\d+.\d+)(-.*)?/
       - pr-dockerize-datacleaner:
           context: sre-pipeline
           requires:
-          - pr-approve-dockerize
+            - pr-approve-dockerize
           filters:
             branches:
               ignore:
-              - master
-              - main
-              - /^releases/(\d+.\d+.\d+)(-.*)?/
+                - master
+                - main
+                - /^releases/(\d+.\d+.\d+)(-.*)?/
       - deploy-on-pr:
           context: sre-pipeline
           requires:
-          - pr-dockerize-webapi
-          - pr-dockerize-worker
-          - pr-dockerize-datacleaner
+            - pr-dockerize-webapi
+            - pr-dockerize-worker
+            - pr-dockerize-datacleaner
           filters:
             branches:
               ignore:
-              - master
-              - main
-              - /^releases/(\d+.\d+.\d+)(-.*)?/
+                - master
+                - main
+                - /^releases/(\d+.\d+.\d+)(-.*)?/
       - pr-approve-deploy-monitor:
           type: approval
           filters:
             branches:
               ignore:
-              - master
-              - main
-              - /^releases/(\d+.\d+.\d+)(-.*)?/
+                - master
+                - main
+                - /^releases/(\d+.\d+.\d+)(-.*)?/
       - deploy-monitor-on-pr:
           context:
-          - dockerhub-reader
+            - dockerhub-reader
           requires:
-          - pr-approve-deploy-monitor
+            - pr-approve-deploy-monitor
           filters:
             branches:
               ignore:
-              - master
-              - main
-              - /^releases/(\d+.\d+.\d+)(-.*)?/
+                - master
+                - main
+                - /^releases/(\d+.\d+.\d+)(-.*)?/
   master:
     jobs:
       - approve-dockerize:
@@ -506,97 +486,95 @@ workflows:
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - master-dockerize-webapi:
           context: sre-pipeline
           requires:
-          - approve-dockerize
+            - approve-dockerize
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - master-dockerize-worker:
           context: sre-pipeline
           requires:
-          - approve-dockerize
+            - approve-dockerize
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - master-dockerize-datacleaner:
           context: sre-pipeline
           requires:
-          - approve-dockerize
+            - approve-dockerize
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - deploy-on-master:
           context: sre-pipeline
           requires:
-          - master-dockerize-webapi
-          - master-dockerize-worker
-          - master-dockerize-datacleaner
+            - master-dockerize-webapi
+            - master-dockerize-worker
+            - master-dockerize-datacleaner
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - approve-deploy-monitor-on-master:
           type: approval
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - deploy-monitor-on-master:
           context:
-          - dockerhub-reader
+            - dockerhub-reader
           requires:
-          - approve-deploy-monitor-on-master
+            - approve-deploy-monitor-on-master
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - changelog:
           context: sre-pipeline
           requires:
-          - deploy-on-master
+            - deploy-on-master
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - wait-approve-release:
           type: approval
           requires:
-          - changelog
+            - changelog
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
       - release:
           context: sre-pipeline
           requires:
-          - wait-approve-release
+            - wait-approve-release
           filters:
             branches:
               only:
-              - master
-              - main
+                - master
+                - main
 
   working-time:
     triggers:
       - schedule:
-          cron: "00 01 * * 1-5" # UTC timezone
-          # JPT: 10:00AM
-          # VNT: 8:00AM
+          cron: 00 01 * * 1-5
           filters:
             branches:
               only:
@@ -606,9 +584,7 @@ workflows:
   non-working-time:
     triggers:
       - schedule:
-          cron: "00 12 * * 1-5" # UTC timezone
-          # JPT: 9:00PM
-          # VNT: 7:00PM
+          cron: 00 12 * * 1-5
           filters:
             branches:
               only:
