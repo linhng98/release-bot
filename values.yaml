@@ -34,7 +34,7 @@ parameters:
     default: v0.1.33
   ai_docker_image:
     type: string
-    default: somewhere
+    default: somewhere1
 commands:
   setup_remote_docker_cmd:
     steps:
