@@ -148,7 +148,7 @@ jobs:
       - run:
           command: |
             DOMAIN=backend bash ./scripts/test-unit-all.sh
-          name: Unit Test All
+          name: somewhere1
       - run:
           name: Codacy Report
           command: |
