@@ -17,9 +17,18 @@ def update_yaml_value(content: dict, path: str, data: str) -> bool:
             return False
 
         if i < len(layers) - 1:
-            value = value[s]
+            if isinstance(s, str):
+                value = value.get(s)
+            else:
+                value = value[s]
+
+            if value == None:
+                return False
+
             continue
 
+        if value.get(s) == None:
+            return False
         value[s] = data
 
     return True
