@@ -4,7 +4,6 @@ from typing import Any, Dict, List
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from helper import *
 import os
 import random
 import string
@@ -19,11 +18,13 @@ class FieldValue(BaseModel):
 class UpdateYamlRequest(BaseModel):
     repository: str
     branch: str
-    field_values: List[FieldValue]
+    image_urls: List[str] = []
+    field_values: List[FieldValue] = []
 
 
 git_user = os.environ["GIT_USER"]
 git_token = os.environ["GIT_TOKEN"]
+git_email = os.environ["GIT_EMAIL"]
 
 
 app = FastAPI()
@@ -102,8 +103,8 @@ async def update_yaml(update_req: UpdateYamlRequest):
             index = repo.index
             index.add_all()
             index.write()
-            author = pygit2.Signature("bot", "bot@cinnamon.is")
-            message = "deliver new release"
+            author = pygit2.Signature(git_user, git_email)
+            message = "delivered new release"
             tree = index.write_tree()
             parents = [repo.head.target]
             repo.create_commit("HEAD", author, author, message, tree, parents)
