@@ -8,6 +8,7 @@ import os
 import random
 import string
 import shutil
+import glob
 
 
 class FieldValue(BaseModel):
@@ -17,6 +18,7 @@ class FieldValue(BaseModel):
 
 class UpdateYamlRequest(BaseModel):
     repository: str
+    path: str = ""
     branch: str
     image_urls: List[str] = []
     field_values: List[FieldValue] = []
