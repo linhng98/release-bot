@@ -17,7 +17,7 @@ envFrom: []
 
 sidecarContainers:
   - name: image_ecr
-    image: image_ecr:tag_b
+    image: image_ecr:tag_a
     command: ['sh', '-c', 'echo "Hello, Kubernetes!" && sleep 3600']
   - name: image_hub
     image: image_hub:tag_a
