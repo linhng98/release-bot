@@ -18,7 +18,7 @@ class FieldValue(BaseModel):
 
 class UpdateYamlRequest(BaseModel):
     repository: str
-    path: str = ""
+    path: str = "./"
     branch: str
     image_urls: List[str] = []
     field_values: List[FieldValue] = []
@@ -65,8 +65,64 @@ def update_yaml_value(content: dict, path: str, data: str) -> bool:
     return True
 
 
+def parse_imagesurl_to_dict(images_url: List[str]) -> Dict[str, str]:
+    imgs = {}
+    for repo in images_url:
+        i = repo.split(":")[0]
+        tag = repo.split(":")[1]
+        imgs[i] = tag
+
+    return imgs
+
+
+def check_img_exist_file(filename: str, imgs: Dict[str, str]) -> bool:
+    with open(filename, "r") as fr:
+        data = fr.read()
+        for k in imgs:
+            if k in data:
+                return True
+
+    return False
+
+
+def update_image_tag(filename: str, imgs: Dict[str, str]):
+    updated = 0
+
+    with open(filename, "r") as fr:
+        content = yaml.round_trip_load(fr, preserve_quotes=True)
+        for i, t in imgs.items():
+            if i in content["image"]["repository"]:
+                content["image"]["tag"] = t
+                updated += 1
+            for sc in content["sidecarContainers"]:
+                if i in sc["image"]:
+                    sc["image"] = f"{i}:{t}"
+                    updated += 1
+
+    if updated > 0:
+        with open(filename, "w") as fw:
+            yml = yaml.YAML()
+            yml.indent(mapping=2, sequence=4, offset=2)
+            yml.dump(content, stream=fw, transform=append_hyphen)
+
+
 def append_hyphen(yaml: str) -> str:
     return "---\n" + yaml
+
+
+def list_yaml_file(path: str) -> List[str]:
+    files = []
+    for f in glob.glob(f"{path}/*"):
+        fn, suf = os.path.splitext(f)
+        if suf == ".yml" or suf == ".yaml":
+            files.append(f)
+
+    for f in glob.glob(f"{path}/.*"):
+        fn, suf = os.path.splitext(f)
+        if suf == ".yml" or suf == ".yaml":
+            files.append(f)
+
+    return files
 
 
 @app.exception_handler(Exception)
@@ -83,14 +139,24 @@ async def update_yaml(update_req: UpdateYamlRequest):
     git_url = f"https://{git_user}:{git_token}@{update_req.repository}"
     repo = pygit2.clone_repository(git_url, repo_name, checkout_branch=branch)
 
+    if len(update_req.image_urls) > 0:
+        imgs = parse_imagesurl_to_dict(update_req.image_urls)
+        files = list_yaml_file(repo_name)
+        for f in files:
+            if check_img_exist_file(f, imgs):
+                try:
+                    update_image_tag(f, imgs)
+                except Exception as e:
+                    shutil.rmtree(repo_name, ignore_errors=True)
+                    raise e
+
     for v in update_req.field_values:
         try:
             with open(f"{repo_name}/{v.file}", "r") as fr:
                 content = yaml.round_trip_load(fr, preserve_quotes=True)
                 for k, val in v.values.items():
                     if not update_yaml_value(content, k, val):
-                        raise Exception(
-                            f"path {k} doesn't exist in file {v.file}")
+                        raise Exception(f"path {k} doesn't exist in file {v.file}")
             with open(f"{repo_name}/{v.file}", "w") as fw:
                 yml = yaml.YAML()
                 yml.indent(mapping=2, sequence=4, offset=2)
