@@ -18,7 +18,7 @@ class FieldValue(BaseModel):
 
 class UpdateYamlRequest(BaseModel):
     repository: str
-    path: str = "./"
+    path: str = ""
     branch: str
     image_urls: List[str] = []
     field_values: List[FieldValue] = []
@@ -36,6 +36,8 @@ def get_value(s: str) -> Any:
     if s.isnumeric():
         return int(s)
     return s
+
+# update yaml content based ok data path, EX: image.tag, ingress.hosts.[0].host
 
 
 def update_yaml_value(content: dict, path: str, data: str) -> bool:
@@ -65,6 +67,7 @@ def update_yaml_value(content: dict, path: str, data: str) -> bool:
     return True
 
 
+# ["repo_x:tag_a", "repo_y:tag_b"] -> {"repo_x": "tag_a", "repo_y": "tag_b"}
 def parse_imagesurl_to_dict(images_url: List[str]) -> Dict[str, str]:
     imgs = {}
     for repo in images_url:
@@ -75,6 +78,7 @@ def parse_imagesurl_to_dict(images_url: List[str]) -> Dict[str, str]:
     return imgs
 
 
+# check if repoimage exist in yaml file before take action
 def check_img_exist_file(filename: str, imgs: Dict[str, str]) -> bool:
     with open(filename, "r") as fr:
         data = fr.read()
@@ -85,6 +89,7 @@ def check_img_exist_file(filename: str, imgs: Dict[str, str]) -> bool:
     return False
 
 
+# check if repo exist in yaml file, then update image tag
 def update_image_tag(filename: str, imgs: Dict[str, str]):
     updated = 0
 
@@ -94,10 +99,11 @@ def update_image_tag(filename: str, imgs: Dict[str, str]):
             if i in content["image"]["repository"]:
                 content["image"]["tag"] = t
                 updated += 1
-            for sc in content["sidecarContainers"]:
-                if i in sc["image"]:
-                    sc["image"] = f"{i}:{t}"
-                    updated += 1
+            if "sidecarContainers" in content:
+                for sc in content["sidecarContainers"]:
+                    if i in sc["image"]:
+                        sc["image"] = f"{i}:{t}"
+                        updated += 1
 
     if updated > 0:
         with open(filename, "w") as fw:
@@ -110,6 +116,7 @@ def append_hyphen(yaml: str) -> str:
     return "---\n" + yaml
 
 
+# list all yaml file in specific directory path
 def list_yaml_file(path: str) -> List[str]:
     files = []
     for f in glob.glob(f"{path}/*"):
@@ -132,6 +139,7 @@ async def validation_exception_handler(request, err):
     return JSONResponse(status_code=400, content={"detail": f"{err}"})
 
 
+# list all yaml in dir path, then find and update image tag if image repo exist
 @app.post("/yaml_update")
 async def update_yaml(update_req: UpdateYamlRequest):
     branch = update_req.branch
@@ -141,7 +149,7 @@ async def update_yaml(update_req: UpdateYamlRequest):
 
     if len(update_req.image_urls) > 0:
         imgs = parse_imagesurl_to_dict(update_req.image_urls)
-        files = list_yaml_file(repo_name)
+        files = list_yaml_file(repo_name+"/"+update_req.path)
         for f in files:
             if check_img_exist_file(f, imgs):
                 try:
@@ -156,7 +164,8 @@ async def update_yaml(update_req: UpdateYamlRequest):
                 content = yaml.round_trip_load(fr, preserve_quotes=True)
                 for k, val in v.values.items():
                     if not update_yaml_value(content, k, val):
-                        raise Exception(f"path {k} doesn't exist in file {v.file}")
+                        raise Exception(
+                            f"path {k} doesn't exist in file {v.file}")
             with open(f"{repo_name}/{v.file}", "w") as fw:
                 yml = yaml.YAML()
                 yml.indent(mapping=2, sequence=4, offset=2)
