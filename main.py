@@ -225,10 +225,6 @@ async def update_yaml(update_req: UpdateYamlRequest):
             else:
                 continue
 
-    if updated == 0:
-        shutil.rmtree(repo_name, ignore_errors=True)
-        raise ValueError("Nothing to update")
-
     for v in update_req.field_values:
         try:
             with open(f"{repo_name}/{v.file}", "r") as fr:
@@ -236,6 +232,7 @@ async def update_yaml(update_req: UpdateYamlRequest):
                 for k, val in v.values.items():
                     if not update_yaml_value(content, k, val):
                         raise Exception(f"path {k} doesn't exist in file {v.file}")
+                    updated += 1
             with open(f"{repo_name}/{v.file}", "w") as fw:
                 yml = yaml.YAML()
                 yml.indent(mapping=2, sequence=4, offset=2)
@@ -243,6 +240,10 @@ async def update_yaml(update_req: UpdateYamlRequest):
         except Exception as e:
             shutil.rmtree(repo_name, ignore_errors=True)
             raise e
+
+    if updated == 0:
+        shutil.rmtree(repo_name, ignore_errors=True)
+        raise ValueError("Nothing to update")
 
     status: Dict[str, int] = repo.status()
     if bool(status):
